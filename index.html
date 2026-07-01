@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rubik's Cube Solver</title>
+  <!-- cubejs (Kociemba‑style solver port) -->
+  <script src="https://cdn.jsdelivr.net/npm/cubejs/lib/cube.min.js"></script>
+  <!-- Three.js for optional 3‑D cube (small footprint) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <style>
+    body{margin:0;font-family:system-ui,Helvetica,Arial,sans-serif;background:#111;color:#f0f0f0;display:flex;flex-direction:column;align-items:center}
+    header{padding:1rem 0;font-size:1.5rem;font-weight:600;text-transform:uppercase}
+    #viewport{position:relative;width:800px;max-width:90vw}
+    #video{width:100%;border-radius:0.75rem;filter:contrast(1.2)}
+    #overlay{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+    #controls{margin-top:1rem;display:grid;gap:0.5rem;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));width:800px;max-width:90vw}
+    button{padding:0.5rem;border:none;border-radius:0.5rem;background:#333;color:#fff;font-weight:600;cursor:pointer}
+    button:disabled{opacity:0.4;cursor:not-allowed}
+    #log{white-space:pre-wrap;font-size:0.9rem;background:#000;color:#0f0;padding:0.75rem;border-radius:0.5rem;width:800px;max-width:90vw;margin-top:1rem;min-height:6rem;overflow:auto}
+    #solution{font-size:1.25rem;font-weight:600;margin-top:0.5rem}
+    #canvas3d{margin-top:1.5rem;max-width:90vw;border-radius:1rem}
+  </style>
+</head>
+<body>
+  <header>Rubik's Cube Solver</header>
+  <div id="viewport">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="controls">
+    <button data-face="U">Scan U</button>
+    <button data-face="R">Scan R</button>
+    <button data-face="F">Scan F</button>
+    <button data-face="D">Scan D</button>
+    <button data-face="L">Scan L</button>
+    <button data-face="B">Scan B</button>
+    <button id="solve" disabled>Solve</button>
+    <button id="step" disabled>Next Step</button>
+  </div>
+  <div id="solution"></div>
+  <div id="log"></div>
+  <canvas id="canvas3d" width="400" height="400"></canvas>
+
+<script>
+// --- HSV‑based colour classifier (thresholds ported from Python) ---
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h, s, v = max;
+  const d = max - min;
+  s = max === 0 ? 0 : d / max;
+  if (d === 0) h = 0; else {
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  return [h * 180, s * 255, v * 255]; // mimic OpenCV HSV ranges
+}
+function classifyHue(h, s, v) {
+  if (h >= 5 && h <= 36 && s >= 9 && s <= 60 && v >= 45 && v <= 179) return 'W';
+  if (h >= 0 && h <= 25 && s >= 156 && s <= 232 && v >= 82 && v <= 143) return 'R';
+  if (h >= 28 && h <= 39 && s >= 146 && s <= 255 && v >= 132 && v <= 194) return 'Y';
+  if (h >= 42 && h <= 160 && s >= 133 && s <= 255 && v >= 97 && v <= 190) return 'G';
+  if (h >= 55 && h <= 121 && s >= 129 && s <= 255 && v >= 26 && v <= 84) return 'B';
+  if (h >= 1 && h <= 85 && s >= 211 && s <= 248 && v >= 75 && v <= 148) return 'O';
+  return 'O'; // fallback
+}
+
+// --- DOM refs ---
+const video = document.getElementById('video');
+const overlayCanvas = document.getElementById('overlay');
+const octx = overlayCanvas.getContext('2d');
+const logBox = document.getElementById('log');
+const facesButtons = document.querySelectorAll('[data-face]');
+const solveBtn = document.getElementById('solve');
+const stepBtn = document.getElementById('step');
+const solutionBox = document.getElementById('solution');
+const canvas3d = document.getElementById('canvas3d');
+
+let stream, overlayW, overlayH;
+const GRID_SIZE = 3;
+const sampleSpacing = 0.25; // relative offsets inside video frame width/height (~centered grid)
+const cubeFaces = {}; // {U: ['W','W','R', ...], ...}
+let solutionMoves = [];
+let currentMoveIdx = 0;
+
+// --- Three.js minimal cube viewer ---
+let scene, camera, renderer, stickers = {};
+init3d();
+
+function init3d() {
+  renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(canvas3d.width, canvas3d.height, false);
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(45, canvas3d.width / canvas3d.height, 0.1, 10);
+  camera.position.set(3, 3, 3);
+  camera.lookAt(0, 0, 0);
+  const light = new THREE.DirectionalLight(0xffffff, 1);
+  light.position.set(5, 5, 5); scene.add(light);
+  scene.add(new THREE.AmbientLight(0x888888));
+  // build cube (27 smaller cubies simplified as stickers planes)
+  const colors = { W: 0xffffff, Y: 0xffff00, R: 0xff0000, O: 0xff8800, G: 0x00ff00, B: 0x0000ff };
+  const faceDefs = { U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1], R: [1, 0, 0], L: [-1, 0, 0] };
+  for (const face in faceDefs) {
+    const dir = new THREE.Vector3(...faceDefs[face]);
+    for (let i = 0; i < 9; i++) {
+      const row = Math.floor(i / 3) - 1;
+      const col = (i % 3) - 1;
+      const plane = new THREE.PlaneGeometry(0.9, 0.9);
+      const material = new THREE.MeshLambertMaterial({ color: 0x222222 });
+      const sticker = new THREE.Mesh(plane, material);
+      sticker.position.copy(dir).multiplyScalar(1.51);
+      if (dir.x) sticker.rotation.y = Math.PI / 2;
+      if (dir.y) sticker.rotation.x = dir.y > 0 ? -Math.PI / 2 : Math.PI / 2;
+      // offset inside face
+      if (dir.z !== 0) {
+        sticker.position.x += col;
+        sticker.position.y += -row;
+      } else if (dir.x !== 0) {
+        sticker.position.z += -col;
+        sticker.position.y += -row;
+      } else if (dir.y !== 0) {
+        sticker.position.x += col;
+        sticker.position.z += dir.y > 0 ? row : -row;
+      }
+      scene.add(sticker);
+      stickers[face + i] = sticker;
+    }
+  }
+  animate();
+}
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+function updateCubeState(faceColorsByLetter) {
+  for (const face in faceColorsByLetter) {
+    const arr = faceColorsByLetter[face];
+    arr.forEach((clr, idx) => {
+      const sticker = stickers[face + idx];
+      sticker.material.color.set(clr ? colorHex(clr) : 0x222222);
+    });
+  }
+}
+function colorHex(letter){
+  return {W:0xffffff,Y:0xffff00,R:0xff0000,O:0xff8800,G:0x00ff00,B:0x0000ff}[letter]||0x666666;
+}
+
+// --- Camera stream & overlay grid ---
+(async function initCam() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 1280, height: 720 } });
+    video.srcObject = stream;
+    await new Promise(r=>video.onloadedmetadata=r);
+    overlayCanvas.width = video.videoWidth;
+    overlayCanvas.height = video.videoHeight;
+    overlayW = overlayCanvas.width;
+    overlayH = overlayCanvas.height;
+    drawGrid();
+  } catch (err) {
+    alert('Camera access denied: ' + err);
+  }
+})();
+
+function drawGrid() {
+  octx.clearRect(0,0,overlayW,overlayH);
+  octx.strokeStyle = '#0f0';
+  octx.lineWidth = 2;
+  const offsetX = overlayW/2 - GRID_SIZE*sampleSpacing*overlayW/2;
+  const offsetY = overlayH/2 - GRID_SIZE*sampleSpacing*overlayH/2 + 40;
+  for(let r=0;r<GRID_SIZE;r++){
+    for(let c=0;c<GRID_SIZE;c++){
+      const x = offsetX + c*sampleSpacing*overlayW;
+      const y = offsetY + r*sampleSpacing*overlayH;
+      octx.strokeRect(x-15,y-15,30,30);
+    }
+  }
+}
+
+function scanCurrentFace(){
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = overlayW; tempCanvas.height = overlayH;
+  const tctx = tempCanvas.getContext('2d');
+  tctx.drawImage(video,0,0);
+  const faceColors=[];
+  const offsetX = overlayW/2 - GRID_SIZE*sampleSpacing*overlayW/2;
+  const offsetY = overlayH/2 - GRID_SIZE*sampleSpacing*overlayH/2 + 40;
+  for(let r=0;r<GRID_SIZE;r++){
+    for(let c=0;c<GRID_SIZE;c++){
+      const x = offsetX + c*sampleSpacing*overlayW;
+      const y = offsetY + r*sampleSpacing*overlayH;
+      const data = tctx.getImageData(x,y,1,1).data;
+      const [h,s,v]=rgbToHsv(data[0],data[1],data[2]);
+      faceColors.push(classifyHue(h,s,v));
+      octx.fillStyle="#ff0";octx.fillText(classifyHue(h,s,v),x-5,y-20);
+    }
+  }
+  return faceColors;
+}
+
+facesButtons.forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const face = btn.dataset.face;
+    const colors = scanCurrentFace();
+    cubeFaces[face]=colors;
+    btn.disabled=true;
+    log(`Scanned ${face}: ${colors.join('')}`);
+    updateCubeState(cubeFaces);
+    if(Object.keys(cubeFaces).length===6) solveBtn.disabled=false;
+  });
+});
+
+solveBtn.addEventListener('click',()=>{
+  // map center colors to faces
+  const colorToFace={};
+  ['U','R','F','D','L','B'].forEach(face=>colorToFace[cubeFaces[face][4]]=face);
+  const cubeString=['U','R','F','D','L','B'].map(face=>cubeFaces[face].map(clr=>colorToFace[clr]||'?').join('')).join('');
+  log(`Cube string: ${cubeString}`);
+  try{
+    solutionMoves = cubejs.solve(cubeString).split(' ');
+    currentMoveIdx=0;
+    solutionBox.textContent=`Solution (${solutionMoves.length}): ${solutionMoves.join(' ')}`;
+    stepBtn.disabled=false;
+  }catch(e){
+    log('Solver error: '+e);
+  }
+});
+
+stepBtn.addEventListener('click',()=>{
+  if(currentMoveIdx>=solutionMoves.length){stepBtn.disabled=true;return;}
+  const move=solutionMoves[currentMoveIdx++];
+  log(`➡️ ${move}`);
+  applyMoveToStickers(move);
+  if(currentMoveIdx>=solutionMoves.length){stepBtn.disabled=true;log('Cube solved!');}
+});
+
+// --- Cube state manipulation (visual only, full physical simulation not required) ---
+function applyMoveToStickers(move){
+  // Very small visual hack: just rotate entire cube instead of sticker permutations for brevity
+  const axisMap={X:new THREE.Vector3(1,0,0),Y:new THREE.Vector3(0,1,0),Z:new THREE.Vector3(0,0,1)};
+  const speed=0.2;
+  let axis; let angle= (move.includes("'")?-Math.PI/2:Math.PI/2);
+  if(move[0]==='R'||move[0]==='L')axis=axisMap.X;
+  else if(move[0]==='U'||move[0]==='D')axis=axisMap.Y;
+  else axis=axisMap.Z;
+  // simple tween
+  const start=performance.now();
+  (function rot(t){
+    const dt=Math.min((t-start)/200,1);
+    scene.rotation.setFromVector3(axis.clone().multiplyScalar(angle*dt));
+    if(dt<1)requestAnimationFrame(rot);
+  })(start);
+}
+
+function log(msg){
+  logBox.textContent+=msg+'\n';
+  logBox.scrollTop=logBox.scrollHeight;
+}
+</script>
+</body>
+</html>
