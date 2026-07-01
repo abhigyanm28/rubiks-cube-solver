@@ -1,75 +1,61 @@
-# Rubik's Cube Solver with OpenCV and Kociemba
+# Rubik's Cube Solver
 
-A real-time Rubik's Cube solver built with Python and OpenCV that:
+Rubik's Cube Solver is a Python project for scanning a physical cube, classifying the sticker colors, and generating a solve sequence. It also includes a lightweight cube-state viewer and a browser demo for presentation purposes.
 
-1. Scans a physical cube using your webcam
-2. Classifies sticker colors with HSV/LAB-based logic
-3. Computes a solution using the Kociemba two-phase algorithm
-4. Guides the user with visual move overlays and a live state viewer
+## What It Does
 
-## Features
+- Captures cube faces with a webcam
+- Classifies colors using OpenCV-based image analysis
+- Builds a cube state and solves it with Kociemba
+- Shows the cube state in a separate viewer window
+- Includes a simple HTML demo for showcasing the project
 
-- Live webcam scanning of all 6 cube faces
-- Kociemba-based optimal move sequence generation
-- Mirrored-camera handling fallback
-- Live viewer window using TCP socket communication
-- Step-by-step move guidance overlays
-- Manual correction commands for scanned stickers
+## Project Files
 
-## Tech Stack
+```text
+Rubiks-Cube-Solver/
+|-- scanner_solver.py          # Webcam capture, color classification, and solver logic
+|-- cube_viewer.py             # Live cube state viewer
+|-- rubiks_cube_web_solver.html # Browser-based demo page
+|-- resources/                 # Sticker images and move icons
+|-- README.md
+```
+
+## Requirements
 
 - Python 3
 - OpenCV
 - NumPy
 - kociemba
-- socket
-- pickle
 
-## Project Structure
-
-```text
-Rubiks-Cube-Solver/
-|-- Main.py        # Scanner, solver, and overlay logic
-|-- State.py       # Live cube state viewer
-|-- resources/     # Sticker images and move arrows
-|-- README.md
-```
-
-## Installation
+Install the Python dependencies with:
 
 ```bash
 pip install opencv-python numpy kociemba
 ```
 
-## Usage
+## How To Run
 
-1. Start the viewer in one terminal:
-
-```bash
-python State.py
-```
-
-2. Start the scanner/solver in another terminal:
+1. Start the cube viewer:
 
 ```bash
-python Main.py
+python cube_viewer.py
 ```
 
-3. Scan the cube faces using keys:
+2. Start the scanner and solver in another terminal:
 
-- U, R, F, D, L, B -> capture that face
-- ESC -> finish scan
+```bash
+python scanner_solver.py
+```
 
-4. Follow solve guidance:
+3. Scan each face of the cube when prompted.
+4. Follow the displayed solve moves until the cube is complete.
 
-- SPACE -> advance to next move
-- ESC -> exit
+## Notes
 
-## Troubleshooting
-
-- Viewer is blank: start `State.py` before `Main.py`
-- No cube updates: check localhost port `9999`
-- Color mismatch: tune thresholds in `classify_hue()` in `Main.py`
+- The project is designed for a local webcam and a physical cube.
+- If the viewer opens blank, start `cube_viewer.py` before the scanner.
+- The browser demo is separate from the Python solver and can be used for presentation or experimentation.
 
 ## License
 
